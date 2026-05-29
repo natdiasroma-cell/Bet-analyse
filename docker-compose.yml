@@ -1,0 +1,101 @@
+version: '3.9'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: bet-analyse-db
+    environment:
+      POSTGRES_USER: bet_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_password}
+      POSTGRES_DB: bet_analyse
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bet_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bet-analyse-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: bet-analyse-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_secure}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bet-analyse-network
+
+  # Backend API Server
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: bet-analyse-api
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: bet_user
+      DB_PASSWORD: ${DB_PASSWORD:-secure_password}
+      DB_NAME: bet_analyse
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secure}@redis:6379
+      JWT_SECRET: ${JWT_SECRET:-your_jwt_secret_key}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    networks:
+      - bet-analyse-network
+    restart: unless-stopped
+
+  # Scraper Service (Python)
+  scraper:
+    build:
+      context: ./scrapers
+      dockerfile: Dockerfile
+    container_name: bet-analyse-scraper
+    environment:
+      PYTHONUNBUFFERED: 1
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secure}@redis:6379
+      API_URL: http://backend:3000
+      FOOTYSTATS_API_KEY: ${FOOTYSTATS_API_KEY}
+      SOFASCORE_API_KEY: ${SOFASCORE_API_KEY}
+    depends_on:
+      - redis
+      - backend
+    volumes:
+      - ./scrapers:/app
+    networks:
+      - bet-analyse-network
+    restart: unless-stopped
+
+networks:
+  bet-analyse-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
